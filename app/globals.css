@@ -1,0 +1,54 @@
+@import "tailwindcss";
+
+@theme {
+  --color-brand-bg: #0B0E14;
+  --color-brand-surface: rgba(255, 255, 255, 0.03);
+  --color-brand-surface-hover: rgba(255, 255, 255, 0.08);
+  --color-brand-border: rgba(255, 255, 255, 0.08);
+  --color-brand-primary: #00F0FF;
+  --color-brand-secondary: #7000FF;
+  --color-brand-success: #00FF88;
+  --color-brand-warning: #FFB800;
+  --color-brand-danger: #FF0055;
+  --color-brand-text: #FFFFFF;
+  --color-brand-text-muted: #8B949E;
+  
+  --font-sans: 'Inter', var(--font-geist-sans), sans-serif;
+  --font-mono: var(--font-geist-mono), monospace;
+}
+
+:root {
+  --background: var(--color-brand-bg);
+  --foreground: var(--color-brand-text);
+}
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Glassmorphism Utilities */
+.glass-panel {
+  background: var(--color-brand-surface);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--color-brand-border);
+  border-radius: 1rem;
+}
+
+.glass-panel:hover {
+  background: var(--color-brand-surface-hover);
+  border-color: rgba(255, 255, 255, 0.15);
+  transition: all 0.3s ease;
+}
+
+/* Gradient Text Utility */
+.text-gradient {
+  background: linear-gradient(90deg, var(--color-brand-primary), var(--color-brand-secondary));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
