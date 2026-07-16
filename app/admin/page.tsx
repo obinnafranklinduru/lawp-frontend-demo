@@ -296,7 +296,7 @@ export default function AdminPortal() {
   };
 
   // Governance Actions
-  const handleUpdateWallet = (e: React.FormEvent, functionName: string, walletAddress: string) => {
+  const handleUpdateWallet = (e: React.FormEvent, functionName: 'setOperationalTreasuryWallet' | 'setLA2Wallet' | 'setMVI1Wallet' | 'setDevWallet', walletAddress: string) => {
     e.preventDefault();
     setErrorMsg(null);
     setSuccessMsg(null);
