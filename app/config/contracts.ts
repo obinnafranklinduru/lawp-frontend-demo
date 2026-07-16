@@ -1,30 +1,30 @@
 export const CONTRACT_ADDRESSES = {
   // == Logs ==
-  //   === LAWP LOCAL DEPLOYMENT STARTED ===
-  //   Deployer: 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
-  //   MockCNGN: 0x7969c5eD335650692Bc04293B07F5BF2e7A673C0
+  // === LAWP LOCAL DEPLOYMENT STARTED ===
+  // Deployer: 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
+  // MockCNGN: 0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512
 
-  //   =========== Deployment Complete ===========
-  //   MockCNGN           : 0x7969c5eD335650692Bc04293B07F5BF2e7A673C0
-  //   ActorRegistry      : 0xc351628EB244ec633d5f21fBD6621e1a683B1181
-  //   YieldVault         : 0xFD471836031dc5108809D173A067e8486B9047A3
-  //   OperationalVault   : 0xcbEAF3BDe82155F56486Fb5a1072cb8baAf547cc
-  //   ImpactToken        : 0x1429859428C0aBc9C2C47C8Ee9FBaf82cFA0F20f
-  //   ComplianceEngine   : 0xB0D4afd8879eD9F52b28595d31B441D079B2Ca07
-  //   MultiSigController : 0x162A433068F51e18b7d13932F27e66a3f99E6890
-  //   ContributionPool   : 0x922D6956C99E12DFeB3224DEA977D0939758A1Fe
-  //   ===========================================
+  // =========== Deployment Complete ===========
+  // MockCNGN           : 0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512
+  // ActorRegistry      : 0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9
+  // YieldVault         : 0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9
+  // OperationalVault   : 0x5FC8d32690cc91D4c39d9d3abcBD16989F875707
+  // ImpactToken        : 0x0165878A594ca255338adfa4d48449f69242Eb8F
+  // ComplianceEngine   : 0xa513E6E4b8f2a923D98304ec87F64353C4D5C853
+  // MultiSigController : 0x2279B7A0a67DB372996a5FaB50D91eAA73d2eBe6
+  // ContributionPool   : 0x8A791620dd6260079BF849Dc5567aDC3F2FdC318
+  // ===========================================
 
   // Anvil (Local)
   31337: {
-    LAWPComplianceEngine: "0xB0D4afd8879eD9F52b28595d31B441D079B2Ca07",
-    LAWPImpactToken: "0x1429859428C0aBc9C2C47C8Ee9FBaf82cFA0F20f",
-    LAWPMultiSigController: "0x162A433068F51e18b7d13932F27e66a3f99E6890",
-    LAWPOperationalVault: "0xcbEAF3BDe82155F56486Fb5a1072cb8baAf547cc",
-    LAWPYieldVault: "0xFD471836031dc5108809D173A067e8486B9047A3",
-    LAWPActorRegistry: "0xc351628EB244ec633d5f21fBD6621e1a683B1181",
-    LAWPContributionPool: "0x922D6956C99E12DFeB3224DEA977D0939758A1Fe",
-    MockCNGN: "0x7969c5eD335650692Bc04293B07F5BF2e7A673C0",
+    MockCNGN: "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
+    LAWPActorRegistry: "0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9",
+    LAWPYieldVault: "0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9",
+    LAWPOperationalVault: "0x5FC8d32690cc91D4c39d9d3abcBD16989F875707",
+    LAWPImpactToken: "0x0165878A594ca255338adfa4d48449f69242Eb8F",
+    LAWPComplianceEngine: "0xa513E6E4b8f2a923D98304ec87F64353C4D5C853",
+    LAWPMultiSigController: "0x2279B7A0a67DB372996a5FaB50D91eAA73d2eBe6",
+    LAWPContributionPool: "0x8A791620dd6260079BF849Dc5567aDC3F2FdC318",
   },
   // Polygon Amoy Testnet
   80002: {

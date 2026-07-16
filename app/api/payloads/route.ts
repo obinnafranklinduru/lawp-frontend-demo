@@ -39,3 +39,22 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Failed to create payload' }, { status: 500 });
   }
 }
+
+export async function PUT(request: Request) {
+  try {
+    const body = await request.json();
+    const { id, status } = body;
+    
+    if (!id || !status) {
+      return NextResponse.json({ error: 'Missing id or status' }, { status: 400 });
+    }
+
+    const stmt = db.prepare('UPDATE payloads SET status = ? WHERE id = ?');
+    stmt.run(status, id);
+
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    console.error('Failed to update payload status:', error);
+    return NextResponse.json({ error: 'Failed to update payload status' }, { status: 500 });
+  }
+}

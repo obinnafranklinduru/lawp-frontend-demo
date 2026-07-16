@@ -3,19 +3,20 @@
 import React, { useState, useEffect } from 'react';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
-import { useAccount, useWriteContract, useWaitForTransactionReceipt, useSignTypedData, useReadContract } from 'wagmi';
-import { LAWPMultiSigControllerABI, MockCNGNABI } from '../config/abis';
+import { useAccount, useWriteContract, useWaitForTransactionReceipt, useSignTypedData, useReadContract, usePublicClient } from 'wagmi';
+import { LAWPMultiSigControllerABI, MockCNGNABI, LAWPComplianceEngineABI } from '../config/abis';
 import { getContractAddress } from '../config/contracts';
 
 export default function BoardPortal() {
+  const publicClient = usePublicClient();
   const { chainId, address } = useAccount();
   const { signTypedData, isPending: isSigning } = useSignTypedData();
-  const { writeContract, data: txHash, isPending } = useWriteContract();
+  const { writeContractAsync, data: txHash, isPending } = useWriteContract();
   const { isLoading: isWaiting } = useWaitForTransactionReceipt({ hash: txHash });
 
   const multiSigAddress = getContractAddress(chainId, 'LAWPMultiSigController');
   const engineAddress = getContractAddress(chainId, 'LAWPComplianceEngine');
-  const cNGNTokenAddress = getContractAddress(chainId, 'CNGNToken');
+  const cNGNTokenAddress = getContractAddress(chainId, 'MockCNGN');
 
   const { data: isUserSigner } = useReadContract({
     address: multiSigAddress as any,
@@ -31,6 +32,16 @@ export default function BoardPortal() {
   
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+
+  const { data: remainingRocCapacityData } = useReadContract({
+    address: engineAddress as any,
+    abi: LAWPComplianceEngineABI,
+    functionName: 'getRemainingRocCapacity',
+    args: newPayload.poolId ? [BigInt(newPayload.poolId)] : undefined,
+    query: { enabled: !!newPayload.poolId && newPayload.type === '0' }
+  });
+  
+  const remainingRoc = remainingRocCapacityData ? Number(remainingRocCapacityData) / 1e6 : null;
 
   const fetchPayloads = async () => {
     try {
@@ -50,7 +61,7 @@ export default function BoardPortal() {
   }, []);
 
   const pendingPayloads = payloads.filter(p => p.status === 'PENDING');
-  const readyExecutions = payloads.filter(p => p.status === 'READY');
+  const readyExecutions = payloads.filter(p => p.status === 'READY' || p.status === 'EXECUTED' || p.status === 'FAILED');
 
   const FLOW_TYPES: Record<string, string> = {
     '0': 'RoC',
@@ -139,9 +150,9 @@ export default function BoardPortal() {
    };
  
    const handleExecute = async (payload: any) => {
-     setErrorMsg(null);
-     setSuccessMsg(null);
      try {
+       setErrorMsg(null);
+       setSuccessMsg("Fetching signatures...");
        const res = await fetch(`/api/signatures?payloadId=${payload.id}`);
        if (!res.ok) throw new Error("Failed to fetch signatures");
        const sigData = await res.json();
@@ -157,40 +168,82 @@ export default function BoardPortal() {
           concatenatedSignatures += sig.signatureHash.replace("0x", "");
        }
 
-       writeContract({
+       if (!publicClient) throw new Error("Public client not found");
+
+       const amountInWei = BigInt(Math.floor(Number(payload.amount) * 1e6));
+       
+       setSuccessMsg("Checking token balance...");
+       const balance = await publicClient.readContract({
+         address: cNGNTokenAddress as `0x${string}`,
+         abi: MockCNGNABI,
+         functionName: 'balanceOf',
+         args: [address as `0x${string}`]
+       }) as bigint;
+
+       if (balance < amountInWei) {
+         throw new Error(`Insufficient cNGN balance. You need ${Number(payload.amount).toLocaleString()} cNGN to execute this payload.`);
+       }
+
+       setSuccessMsg("Checking token approval...");
+       const allowance = await publicClient.readContract({
+         address: cNGNTokenAddress as `0x${string}`,
+         abi: MockCNGNABI,
+         functionName: 'allowance',
+         args: [address as `0x${string}`, engineAddress]
+       }) as bigint;
+
+       if (allowance < amountInWei) {
+         setSuccessMsg("Please approve the token spend limit in your wallet...");
+         const approveHash = await writeContractAsync({
+           address: cNGNTokenAddress as `0x${string}`,
+           abi: MockCNGNABI as any,
+           functionName: 'approve',
+           args: [engineAddress, amountInWei]
+         });
+         setSuccessMsg("Waiting for approval confirmation...");
+         await publicClient.waitForTransactionReceipt({ hash: approveHash });
+       }
+
+       setSuccessMsg("Please confirm the execution transaction...");
+       const executeHash = await writeContractAsync({
          address: multiSigAddress,
          abi: LAWPMultiSigControllerABI as any,
          functionName: 'executeProposal', 
          args: [
            BigInt(payload.id),
            BigInt(payload.poolId),
-           BigInt(Math.floor(Number(payload.amount) * 1e6)),
+           amountInWei,
            parseInt(payload.type),
            BigInt(payload.deadline),
            concatenatedSignatures
          ],
-       }, {
-         onSuccess: () => setSuccessMsg("Execution transaction sent! Waiting for confirmation..."),
-         onError: (err: any) => setErrorMsg(err.shortMessage || err.message || "Failed to execute payload")
        });
+       setSuccessMsg("Execution transaction submitted! Waiting for confirmation...");
+       const receipt = await publicClient.waitForTransactionReceipt({ hash: executeHash });
+       
+       if (receipt.status === 'reverted') {
+         await fetch('/api/payloads', {
+           method: 'PUT',
+           headers: { 'Content-Type': 'application/json' },
+           body: JSON.stringify({ id: payload.id, status: 'FAILED' })
+         });
+         fetchPayloads();
+         throw new Error("Transaction reverted on-chain! Check principal caps or token balances.");
+       }
+
+       await fetch('/api/payloads', {
+         method: 'PUT',
+         headers: { 'Content-Type': 'application/json' },
+         body: JSON.stringify({ id: payload.id, status: 'EXECUTED' })
+       });
+
+       setSuccessMsg("Payload executed successfully!");
+       fetchPayloads();
      } catch (e: any) {
-       setErrorMsg("Error preparing execution: " + e.message);
+       setErrorMsg(e.shortMessage || e.message || "Failed to execute payload");
+       setSuccessMsg(null);
      }
    };
- 
-   const handleApprove = () => {
-    setErrorMsg(null);
-    setSuccessMsg(null);
-    writeContract({
-      address: cNGNTokenAddress,
-      abi: MockCNGNABI,
-      functionName: 'approve',
-      args: [engineAddress, BigInt("1000000000000000000000")],
-    }, {
-      onSuccess: () => setSuccessMsg("Approval transaction sent! Waiting for confirmation..."),
-      onError: (err: any) => setErrorMsg(err.shortMessage || err.message || "Failed to approve token")
-    });
-  };
 
    useEffect(() => {
      if (isWaiting === false && txHash) {
@@ -214,9 +267,18 @@ export default function BoardPortal() {
        
        {successMsg && (
          <div className="p-4 bg-green-500/20 border border-green-500/50 rounded-lg text-green-200 text-sm">
-           <strong>Success:</strong> {successMsg}
+           <strong>Notice:</strong> {successMsg}
          </div>
        )}
+
+      <div className="bg-white/5 border border-[var(--color-brand-border)] p-6 rounded-xl mb-8">
+        <h3 className="text-xl font-bold mb-4 text-[var(--color-brand-primary)]">Board Operations Guide</h3>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+           <div><strong className="text-white block mb-1">1. Propose Route</strong> Create an off-chain EIP-712 payload to route funds out of a specific pool.</div>
+           <div><strong className="text-white block mb-1">2. Cryptographic Signatures</strong> Board members review and sign the payload using their wallets to meet the required signature threshold.</div>
+           <div><strong className="text-white block mb-1">3. Broadcast Execution</strong> Any relayer with sufficient cNGN can execute the payload. The system will automatically bundle token approval and multi-sig execution into a seamless sequence.</div>
+        </div>
+      </div>
 
       <Card title="Propose Revenue Route">
         <form className="grid grid-cols-1 md:grid-cols-5 gap-4 items-end" onSubmit={handlePropose}>
@@ -225,7 +287,12 @@ export default function BoardPortal() {
             <input type="number" required value={newPayload.poolId} onChange={e => setNewPayload({...newPayload, poolId: e.target.value})} placeholder="e.g. 1" className="w-full bg-white/5 border border-[var(--color-brand-border)] rounded p-2 text-white outline-none focus:border-[var(--color-brand-primary)]" />
           </div>
           <div>
-            <label className="block text-sm text-[var(--color-brand-text-muted)] mb-1">Amount (cNGN)</label>
+            <label className="block text-sm text-[var(--color-brand-text-muted)] mb-1">
+              Amount (cNGN)
+              {newPayload.type === '0' && remainingRoc !== null && (
+                <span className="text-xs text-[var(--color-brand-success)] ml-2">(Max: {remainingRoc.toLocaleString()} cNGN)</span>
+              )}
+            </label>
             <input type="number" required value={newPayload.amount} onChange={e => setNewPayload({...newPayload, amount: e.target.value})} placeholder="e.g. 500" className="w-full bg-white/5 border border-[var(--color-brand-border)] rounded p-2 text-white outline-none focus:border-[var(--color-brand-primary)]" />
           </div>
           <div>
@@ -312,24 +379,20 @@ export default function BoardPortal() {
                     <div className="text-[var(--color-brand-text-muted)]">Flow Type:</div>
                     <div className="text-right font-mono">{FLOW_TYPES[payload.type] || payload.type}</div>
                   </div>
-                  <div className="flex gap-2 mt-4">
-                    <Button 
-                      variant="ghost" 
-                      onClick={handleApprove}
-                      disabled={isPending || isWaiting}
-                      className="border border-white/10"
-                    >
-                      1. Approve cNGN
-                    </Button>
-                    <Button 
-                      fullWidth 
-                      variant="secondary" 
-                      className="shadow-[0_0_15px_var(--color-brand-secondary)]"
-                      disabled={isPending || isWaiting}
-                      onClick={() => handleExecute(payload)}
-                    >
-                      2. Broadcast
-                    </Button>
+                  <div className="flex flex-col mt-4">
+                    {payload.status === 'EXECUTED' ? (
+                      <Button fullWidth variant="ghost" disabled className="border border-[var(--color-brand-success)]/50 text-[var(--color-brand-success)]">
+                        Executed
+                      </Button>
+                    ) : payload.status === 'FAILED' ? (
+                      <Button fullWidth variant="ghost" disabled className="border border-red-500/50 text-red-500">
+                        Failed
+                      </Button>
+                    ) : (
+                      <Button fullWidth onClick={() => handleExecute(payload)} disabled={isPending || isWaiting}>
+                        {isPending || isWaiting ? 'Processing...' : 'Broadcast'}
+                      </Button>
+                    )}
                   </div>
                </div>
               ))

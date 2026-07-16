@@ -3,16 +3,19 @@
 import React, { useState, useEffect } from 'react';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
-import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContracts } from 'wagmi';
+import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContracts, usePublicClient } from 'wagmi';
 import { LAWPComplianceEngineABI, MockCNGNABI, LAWPImpactTokenABI, LAWPContributionPoolABI } from '../config/abis';
 import { getContractAddress } from '../config/contracts';
 
-export default function InvestorPortal() {
+export default function ContributorPortal() {
   const [mounted, setMounted] = useState(false);
   const [pools, setPools] = useState<any[]>([]);
+  const [contributionAmounts, setContributionAmounts] = useState<{[key: string]: string}>({});
+  const [localOverrides, setLocalOverrides] = useState<{[tokenId: number]: { pendingYield: number, yieldClaimed: number }}>({});
 
+  const publicClient = usePublicClient();
   const { address, isConnected, chainId } = useAccount();
-  const { writeContract, data: txHash, isPending } = useWriteContract();
+  const { writeContract, writeContractAsync, data: txHash, isPending } = useWriteContract();
   const { isLoading: isWaiting, isSuccess: isConfirmed, error: receiptError } = useWaitForTransactionReceipt({ hash: txHash });
 
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -54,17 +57,17 @@ export default function InvestorPortal() {
   const batchContracts = tokenIdsToQuery.flatMap(id => [
     { address: impactTokenAddress, abi: LAWPImpactTokenABI as any, functionName: 'ownerOf', args: [id] },
     { address: impactTokenAddress, abi: LAWPImpactTokenABI as any, functionName: 'getTokenData', args: [id] },
-    { address: engineAddress, abi: LAWPComplianceEngineABI as any, functionName: 'calculateProportionalYield', args: [id] }
+    { address: engineAddress, abi: LAWPComplianceEngineABI as any, functionName: 'calculateProportionalYield', args: [id] },
+    { address: engineAddress, abi: LAWPComplianceEngineABI as any, functionName: 'yieldClaimed', args: [id] }
   ]);
 
-  const { data: batchData } = useReadContracts({ 
+  const { data: batchData, refetch: refetchBatchData } = useReadContracts({ 
     contracts: batchContracts,
     query: {
       enabled: isConnected && !!address
     }
   });
 
-  // Fetch real on-chain totalRaised for each pool
   const poolContracts = pools.map(p => ({
     address: contributionPoolAddress,
     abi: LAWPContributionPoolABI as any,
@@ -83,11 +86,12 @@ export default function InvestorPortal() {
   useEffect(() => {
     if (isConfirmed) {
       refetchPoolData();
+      refetchBatchData();
     }
-  }, [isConfirmed, refetchPoolData]);
+  }, [isConfirmed, refetchPoolData, refetchBatchData]);
 
   const portfolio = tokenIdsToQuery.map((tokenIdBigInt, index) => {
-    const baseIdx = index * 3;
+    const baseIdx = index * 4;
     const ownerRes = batchData?.[baseIdx];
     
     // Only show tokens owned by connected address
@@ -95,22 +99,34 @@ export default function InvestorPortal() {
 
     const tDataRes = batchData?.[baseIdx + 1];
     const yDataRes = batchData?.[baseIdx + 2];
+    const yClaimedRes = batchData?.[baseIdx + 3];
 
     if (tDataRes?.status !== 'success') return null;
     const tokenData: any = tDataRes.result;
 
-    const pendingYield = yDataRes?.status === 'success' ? Number(yDataRes.result) / 1e18 : 0;
-    const sharePercentage = (Number(tokenData.poolShareWAD) / 1e18) * 100;
-    const pendingRoC = 0; // Simplified
+    let pendingYieldNum = yDataRes?.status === 'success' ? Number(yDataRes.result) / 1e6 : 0;
+    let yieldClaimedNum = yClaimedRes?.status === 'success' ? Number(yClaimedRes.result) / 1e6 : 0;
     
-    const pool = pools.find(p => parseInt(p.id) === Number(tokenData.poolId));
+    if (localOverrides[Number(tokenIdBigInt)]) {
+      pendingYieldNum = localOverrides[Number(tokenIdBigInt)].pendingYield;
+      yieldClaimedNum = localOverrides[Number(tokenIdBigInt)].yieldClaimed;
+    }
+
+    const rocReturnedNum = Number(tokenData.rocReturned) / 1e6;
+    
+    const poolIdx = pools.findIndex(p => parseInt(p.id) === Number(tokenData.poolId));
+    const sharePercentage = (Number(tokenData.poolShareWAD) / 1e18) * 100;
+    const pool = pools[poolIdx];
 
     return {
       tokenId: Number(tokenIdBigInt),
       poolName: pool ? pool.name : `Pool #${tokenData.poolId}`,
       sharePercentage: sharePercentage.toFixed(2) + '%',
-      pendingYield: pendingYield.toLocaleString(undefined, { minimumFractionDigits: 2 }),
-      pendingRoC: pendingRoC.toLocaleString(undefined, { minimumFractionDigits: 2 }),
+      pendingYield: pendingYieldNum.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+      yieldClaimed: yieldClaimedNum.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+      rocReturned: rocReturnedNum.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+      rawPendingYield: pendingYieldNum,
+      rawYieldClaimed: yieldClaimedNum
     };
   }).filter(Boolean) as any[];
 
@@ -129,58 +145,102 @@ export default function InvestorPortal() {
     });
   };
 
-  const handleApprove = () => {
-    setErrorMsg(null);
-    setSuccessMsg(null);
-    writeContract({
-      address: mockTokenAddress,
-      abi: MockCNGNABI as any,
-      functionName: 'approve',
-      args: [contributionPoolAddress, BigInt(1000000) * BigInt(1e6)],
-    }, {
-      onSuccess: () => setSuccessMsg("Approval transaction sent! You can contribute once confirmed."),
-      onError: (err: any) => setErrorMsg(err.shortMessage || err.message || "Failed to approve")
-    });
+  const handleContribute = async (poolId: string, poolName: string) => {
+    try {
+      const amountStr = contributionAmounts[poolId] || "1000";
+      const amountNum = parseFloat(amountStr);
+      if (isNaN(amountNum) || amountNum < 100) {
+        setErrorMsg("Minimum contribution is 100 cNGN.");
+        return;
+      }
+      const amountInWei = BigInt(Math.floor(amountNum * 1e6));
+
+      setErrorMsg(null);
+      setSuccessMsg(`Preparing contribution for ${poolName}...`);
+
+      if (!publicClient) throw new Error("Public client not found");
+
+      // 1. Check Allowance
+      const allowance = await publicClient.readContract({
+        address: mockTokenAddress,
+        abi: MockCNGNABI,
+        functionName: 'allowance',
+        args: [address as `0x${string}`, contributionPoolAddress]
+      }) as bigint;
+
+      // 2. Approve if needed
+      if (allowance < amountInWei) {
+        setSuccessMsg("Please approve the token spend limit in your wallet...");
+        const approveHash = await writeContractAsync({
+          address: mockTokenAddress,
+          abi: MockCNGNABI as any,
+          functionName: 'approve',
+          args: [contributionPoolAddress, amountInWei]
+        });
+        setSuccessMsg("Waiting for approval confirmation...");
+        await publicClient.waitForTransactionReceipt({ hash: approveHash });
+      }
+
+      // 3. Contribute
+      setSuccessMsg("Please confirm the contribution transaction...");
+      const txHash = await writeContractAsync({
+        address: contributionPoolAddress,
+        abi: LAWPContributionPoolABI as any,
+        functionName: 'contribute',
+        args: [BigInt(poolId), amountInWei]
+      });
+      setSuccessMsg("Contribution submitted! Waiting for confirmation...");
+      const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
+      
+      if (receipt.status === 'reverted') throw new Error("Contribution reverted on-chain.");
+
+      setSuccessMsg(`Successfully contributed ${amountNum.toLocaleString()} cNGN to ${poolName}!`);
+      refetchPoolData();
+    } catch (err: any) {
+      setErrorMsg(err.shortMessage || err.message || `Failed to contribute to ${poolName}`);
+      setSuccessMsg(null);
+    }
   };
 
-  const handleContribute = (poolId: string, poolName: string) => {
-    setErrorMsg(null);
-    setSuccessMsg(null);
-    writeContract({
-      address: contributionPoolAddress,
-      abi: LAWPContributionPoolABI as any,
-      functionName: 'contribute',
-      args: [BigInt(poolId), BigInt(1000) * BigInt(1e6)], // 1000 cNGN
-    }, {
-      onSuccess: () => setSuccessMsg(`Contribution to ${poolName} (Pool #${poolId}) sent! Waiting for confirmation...`),
-      onError: (err: any) => setErrorMsg(err.shortMessage || err.message || `Failed to contribute to ${poolName}`)
-    });
-  };
-
-  const handleClaimYield = (tokenId: number) => {
-    writeContract({
-      address: engineAddress,
-      abi: LAWPComplianceEngineABI,
-      functionName: 'claimYield',
-      args: [BigInt(tokenId)],
-    });
-  };
-
-  const handleClaimRoC = (tokenId: number) => {
-    writeContract({
-      address: engineAddress,
-      abi: LAWPComplianceEngineABI,
-      functionName: 'claimRoC',
-      args: [BigInt(tokenId)],
-    });
+  const handleClaimYield = async (tokenId: number) => {
+    try {
+      setErrorMsg(null);
+      setSuccessMsg("Please confirm the claim transaction...");
+      const txHash = await writeContractAsync({
+        address: engineAddress,
+        abi: LAWPComplianceEngineABI,
+        functionName: 'claimYield',
+        args: [BigInt(tokenId)],
+      });
+      setSuccessMsg("Claim submitted! Waiting for confirmation...");
+      const receipt = await publicClient?.waitForTransactionReceipt({ hash: txHash });
+      if (receipt?.status === 'reverted') throw new Error("Claim reverted on-chain.");
+      
+      const token = portfolio.find(t => t.tokenId === tokenId);
+      if (token) {
+        setLocalOverrides(prev => ({
+          ...prev, 
+          [tokenId]: { 
+            pendingYield: 0, 
+            yieldClaimed: token.rawYieldClaimed + token.rawPendingYield 
+          }
+        }));
+      }
+      refetchBatchData();
+      
+      setSuccessMsg("Tokens claimed successfully!");
+    } catch (err: any) {
+      setErrorMsg(err.shortMessage || err.message || "Failed to claim tokens");
+      setSuccessMsg(null);
+    }
   };
 
   return (
     <div className="space-y-8 animate-in fade-in duration-500">
       <div className="flex justify-between items-center">
         <div>
-          <h2 className="text-3xl font-bold">Investor Portal</h2>
-          <p className="text-[var(--color-brand-text-muted)] mt-2">Discover pools and manage your Impact Tokens.</p>
+          <h2 className="text-3xl font-bold">Contributor Portal</h2>
+          <p className="text-[var(--color-brand-text-muted)] mt-2">Support social impact projects and earn grants.</p>
         </div>
         <Button onClick={handleFaucet} variant="secondary" disabled={!isDemoConnected || isPending || isWaiting}>
           {isPending ? 'Minting...' : 'Faucet (10,000 cNGN)'}
@@ -195,9 +255,19 @@ export default function InvestorPortal() {
       
       {successMsg && (
         <div className="p-4 bg-green-500/20 border border-green-500/50 rounded-lg text-green-200 text-sm">
-          <strong>Success:</strong> {successMsg} {isConfirmed && "(Transaction Confirmed!)"}
+          <strong>Notice:</strong> {successMsg}
         </div>
       )}
+
+      <div className="bg-white/5 border border-[var(--color-brand-border)] p-6 rounded-xl mb-8">
+        <h3 className="text-xl font-bold mb-4 text-[var(--color-brand-primary)]">How It Works</h3>
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-sm">
+           <div><strong className="text-white block mb-1">1. Get Tokens</strong> Use the Faucet to receive testnet cNGN tokens.</div>
+           <div><strong className="text-white block mb-1">2. Choose Pool</strong> Select an active impact project and set your contribution amount (Min. 100).</div>
+           <div><strong className="text-white block mb-1">3. Contribute</strong> Confirm the transaction to receive your fractional Impact Token.</div>
+           <div><strong className="text-white block mb-1">4. Earn Grants</strong> As projects generate revenue, claim your programmatic grants directly to your wallet.</div>
+        </div>
+      </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         <Card title="Active Pools">
@@ -207,12 +277,10 @@ export default function InvestorPortal() {
                  No active pools.
                </div>
             ) : (
-             pools.map((pool, index) => {
-               // Fetch real totalRaised from on-chain data
+              pools.map((pool, index) => {
                let raised = 0;
                if (poolData && poolData[index] && poolData[index].status === 'success') {
                  const res = poolData[index].result as any;
-                 // res is PoolConfig struct, so res.totalRaised is the BigInt
                  raised = Number(res.totalRaised) / 1e6;
                }
                
@@ -237,21 +305,25 @@ export default function InvestorPortal() {
                     <span>Goal: {parseInt(pool.goal).toLocaleString()} cNGN</span>
                   </div>
                   {pool.status === 'Open' && (
-                    <div className="flex gap-2 mt-2">
-                      <Button 
-                        variant="ghost" 
-                        onClick={handleApprove}
-                        disabled={isPending || isWaiting}
-                        className="border border-white/10"
-                      >
-                        1. Approve cNGN
-                      </Button>
+                    <div className="flex flex-col gap-2 mt-3 pt-3 border-t border-white/5">
+                      <div className="flex gap-2 items-center">
+                        <input 
+                          type="number" 
+                          min="100"
+                          placeholder="Amount (e.g. 1000)"
+                          className="bg-white/5 border border-[var(--color-brand-border)] rounded px-3 py-2 w-full text-white outline-none focus:border-[var(--color-brand-primary)] transition"
+                          value={contributionAmounts[pool.id] !== undefined ? contributionAmounts[pool.id] : '1000'}
+                          onChange={(e) => setContributionAmounts({...contributionAmounts, [pool.id]: e.target.value})}
+                        />
+                        <span className="text-[var(--color-brand-text-muted)] text-sm whitespace-nowrap">cNGN</span>
+                      </div>
                       <Button 
                         fullWidth 
                         onClick={() => handleContribute(pool.id, pool.name)}
                         disabled={isPending || isWaiting}
+                        className="shadow-[0_0_15px_var(--color-brand-primary)]"
                       >
-                        2. Contribute 1,000 cNGN
+                        Contribute
                       </Button>
                     </div>
                   )}
@@ -289,29 +361,24 @@ export default function InvestorPortal() {
                         </span>
                       </div>
                       <div className="grid grid-cols-2 gap-2 text-sm mt-1">
-                        <span className="text-[var(--color-brand-text-muted)]">Pending Yield:</span>
+                        <span className="text-[var(--color-brand-text-muted)]">Available Balance:</span>
                         <span className="text-right text-[var(--color-brand-success)] font-mono">{token.pendingYield} cNGN</span>
                         
-                        <span className="text-[var(--color-brand-text-muted)]">Pending RoC:</span>
-                        <span className="text-right text-[var(--color-brand-success)] font-mono">{token.pendingRoC} cNGN</span>
+                        <span className="text-[var(--color-brand-text-muted)]">Total Claimed:</span>
+                        <span className="text-right text-purple-400 font-mono">{token.yieldClaimed} cNGN</span>
+                        
+                        <span className="text-[var(--color-brand-text-muted)]">Refunded (RoC):</span>
+                        <span className="text-right text-blue-400 font-mono">{token.rocReturned} cNGN</span>
                       </div>
-                      <div className="flex gap-2 mt-3">
-                        <Button 
-                          fullWidth 
-                          variant="secondary" 
-                          disabled={token.pendingYield === '0.00' || isPending || isWaiting}
-                          onClick={() => handleClaimYield(token.tokenId)}
-                        >
-                          {isPending ? 'Confirming...' : 'Claim Yield'}
-                        </Button>
+                      <div className="mt-3">
                         <Button 
                           fullWidth 
                           variant="ghost" 
-                          disabled={token.pendingRoC === '0.00' || isPending || isWaiting} 
-                          className="border border-white/10"
-                          onClick={() => handleClaimRoC(token.tokenId)}
+                          className="border border-[var(--color-brand-success)]/50 text-[var(--color-brand-success)] hover:bg-[var(--color-brand-success)]/10"
+                          onClick={() => handleClaimYield(token.tokenId)}
+                          disabled={token.rawPendingYield === 0 || isPending || isWaiting}
                         >
-                          Claim RoC
+                          Claim Available Balance
                         </Button>
                       </div>
                    </div>
